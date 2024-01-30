@@ -1,46 +1,38 @@
 #!/bin/bash
 
-REPO_URL="https://repository.xxx.net/repository/"
+REPO_URL="http://registry.8081/repository/"
 USER="admin"
-PASSWORD="datpassword"
+PASSWORD="nM"
+BUCKET="docker-registary-jenkins-test"
+KEEP_IMAGES=3
 
-BUCKET="portal-docker"
-KEEP_IMAGES=10
+while true; do  # Loop until condition is met
+    IMAGES=$(curl --silent -X GET -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' -u ${USER}:${PASSWORD} "${REPO_URL}${BUCKET}/v2/_catalog" | jq .repositories | jq -r '.[]' )
 
-IMAGES=$(curl --silent -X GET -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' -u ${USER}:${PASSWORD} "${REPO_URL}${BUCKET}/v2/_catalog" | jq .repositories | jq -r '.[]' )
+    TAGS_TO_DELETE=0
 
-echo ${IMAGES}
+    for IMAGE_NAME in ${IMAGES}; do
+        TAGS=$(curl --silent -X GET -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' -u ${USER}:${PASSWORD} "${REPO_URL}${BUCKET}/v2/${IMAGE_NAME}/tags/list" | jq .tags | jq -r '.[]' )
+        TAG_COUNT=$(echo $TAGS | wc -w)
 
-for IMAGE_NAME in ${IMAGES}; do
- echo ${IMAGE_NAME}
+        if [ "${TAG_COUNT}" -gt "${KEEP_IMAGES}" ]; then
+            TAGS_TO_DELETE=$((TAGS_TO_DELETE + TAG_COUNT - KEEP_IMAGES))
 
-   TAGS=$(curl --silent -X GET -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' -u ${USER}:${PASSWORD} "${REPO_URL}${BUCKET}/v2/${IMAGE_NAME}/tags/list" | jq .tags | jq -r '.[]' )
-   
-   TAG_COUNT=$(echo $TAGS | wc -w)
-   
-   let TAG_COUNT_DEL=${TAG_COUNT}-${KEEP_IMAGES}
-   COUNTER=0
-   
-   echo "THERE ARE ${TAG_COUNT} IMAGES FOR ${IMAGE_NAME}"
-   
-   ## skip if smaller than keep
-   if [ "${KEEP_IMAGES}" -gt "${TAG_COUNT}" ]
-    then
-      echo "There are only ${TAG_COUNT} Images for ${IMAGE_NAME} - nothing to delete"
-      continue
-   fi
-   
-   for TAG in ${TAGS}; do
-    let COUNTER=COUNTER+1
-    if [ "${COUNTER}" -gt "${TAG_COUNT_DEL}" ]
-     then
-      break;
+            # Delete excess tags for this image
+            for TAG in ${TAGS}; do
+                COUNTER=0
+                while [ "${COUNTER}" -lt "${TAG_COUNT}-${KEEP_IMAGES}" ]; do
+                    IMAGE_SHA=$(curl --silent -I -X GET -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' -u ${USER}:${PASSWORD} "${REPO_URL}${BUCKET}/v2/${IMAGE_NAME}/manifests/$TAG" | grep Docker-Content-Digest | cut -d ":" -f3 | tr -d '\r')
+                    DEL_URL="${REPO_URL}${BUCKET}/v2/${IMAGE_NAME}/manifests/sha256:${IMAGE_SHA}"
+                    RET="$(curl --silent -k -X DELETE -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' -u ${USER}:${PASSWORD} $DEL_URL)"
+                    COUNTER=$((COUNTER + 1))
+                done
+            done
+        fi
+    done
+
+    if [ "${TAGS_TO_DELETE}" -eq 0 ]; then  # Exit loop if no tags were deleted
+        echo "Desired number of tags has been reached."
+        break
     fi
-    
-    IMAGE_SHA=$(curl --silent -I -X GET -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' -u ${USER}:${PASSWORD} "${REPO_URL}${BUCKET}/v2/${IMAGE_NAME}/manifests/$TAG" | grep Docker-Content-Digest | cut -d ":" -f3 | tr -d '\r')
-    echo "DELETE ${TAG} ${IMAGE_SHA}";
-    DEL_URL="${REPO_URL}${BUCKET}/v2/${IMAGE_NAME}/manifests/sha256:${IMAGE_SHA}"
-    RET="$(curl --silent -k -X DELETE -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' -u ${USER}:${PASSWORD} $DEL_URL)"
-   
-   done;
-done;
+done
